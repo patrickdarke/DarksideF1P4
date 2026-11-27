@@ -1,0 +1,28 @@
+# Real Wi-Fi and OpenF1 credentials — copy secrets.h.example to secrets.h.
+secrets.h
+
+# Build output
+build/
+*.bin
+*.elf
+*.map
+
+# macOS
+.DS_Store
+
+# Known-good firmware snapshots (binaries embed credentials)
+known-good/
+
+# Session data downloaded by tools/mqtt_bench.py
+tools/bench_cache/
+
+# Desktop simulator build output and bench serial logs
+tools/sim/obj/
+tools/sim/sim
+tools/sim/out/
+tools/out/
+logs/
+tools/samples/
+
+# Local working notes (kept on the owner's machine only)
+HANDOFF.md
