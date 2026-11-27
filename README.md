@@ -110,3 +110,12 @@ screens stop updating until it ends.
 | `tools/serial_hub.py`, `tools/mqtt_bench.py` | bench: serial log + screenshots; a recorded session served as an MQTT stream |
 | `CLAUDE.md` | working notes: hardware findings, bench tools, what has been checked on the panel |
 | `docs/screens/` | the screenshots above |
+
+## Licence
+
+MIT, see [LICENSE](LICENSE). That covers this project's own code. Other
+people's files keep their own terms: LVGL and ArduinoJson under `lib/` are
+MIT (each folder has its licence file), and the files from Elecrow's example
+carry Espressif's headers (`esp_panel_*_conf.h` Apache-2.0, `lvgl_v8_port.*`
+CC0-1.0). The timing data comes from OpenF1 and MultiViewer under their own
+terms.
