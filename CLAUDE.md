@@ -240,8 +240,9 @@ conventions follow that project: arduino-cli, core 3.3.11, `build.sh`,
   unchanged). With no Wi-Fi name the boot screen shows `SETUP_URL` and
   Wi-Fi is not started. `Serial.setRxBufferSize(1024)`: a set-up line is up
   to 260 characters and loop() reads 5 times a second.
-- Web flasher (`docs/`, GitHub Pages from `/docs` on main - Pages still has
-  to be switched on in the repository's settings after the first push):
+- Web flasher (`docs/`, GitHub Pages from `/docs` on main, switched on
+  2026-11-28: a push to main republishes it within a minute or so; the live
+  files were compared byte for byte with the committed ones that day):
   `docs/index.html` = ESP Web Tools 10.5.2 from unpkg (its manifest knows
   `ESP32-P4`; flashes at 115200 through the CH340) plus a set-up form that
   talks the `K` commands over Web Serial. `tools/make_release.sh` builds
