@@ -8,6 +8,7 @@
 #include <vector>
 #include "f1_app.h"
 #include "config.h"
+#include "settings.h"
 #include "ui.h"
 
 static uint32_t g_ms = 1000;
@@ -18,6 +19,8 @@ F1Model &appModel() { return *g_m; } const AppStatus &appStatus() { return g_st;
 int64_t appWallMs() { return g_wall; }
 void appWantFast(bool, uint8_t) {}
 const uint8_t *headGet(uint8_t, uint16_t *, uint16_t *) { return nullptr; }
+void soundRaceStart() {}
+const Settings &settings() { static Settings s = {"", "", "", "", "", true, true}; return s; }
 
 static lv_color_t fb[1024 * 600];
 static void flush(lv_disp_drv_t *d, const lv_area_t *a, lv_color_t *px) {

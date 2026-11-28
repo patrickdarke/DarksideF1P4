@@ -77,7 +77,9 @@ conventions follow that project: arduino-cli, core 3.3.11, `build.sh`,
   commands through cmd.req: `M` logs in to the real stream and reports
   (works with no session on), `V0`-`V4` live screen (tower, map, sectors,
   tyres, car), `D44` car 44's screen, `I1` between-session screen, `A3` shows
-  alert 3 (F1AlertKind; 9-12 are the footer strips). A screenshot fails if
+  alert 3 (F1AlertKind; 9-12 are the footer strips), `P` plays the race-start
+  sound (changes nothing on the screen), `K?` reports the settings (never a
+  password; the other `K` commands are in settings.h). A screenshot fails if
   any ESP-IDF log line lands inside it, which is why f1_mqtt.cpp silences
   the mqtt/tls log tags. One-off build settings without touching secrets.h:
   `DEFINES="-DREPLAY_SESSION_KEY=11420" ./build.sh flash`
@@ -147,6 +149,131 @@ conventions follow that project: arduino-cli, core 3.3.11, `build.sh`,
   same bench stream (lap 19, then the new "M 1" stints after the
   safety-car stops arriving over the stream); five tabs fit the footer; no
   stream drop in that run.
+- Hardware 2026-11-28 (06:30-06:55 ET), the review build below, three bench
+  runs then the plain build left on for Qatar FP3:
+  (a) bench stream of race 11420 at `--offset 2070` with
+  `-DSTREAM_QUIET_MS=20000`: `[mqtt] caught up by REST` after the session
+  start, after the broker was killed for 8 s, and after the silent-stream
+  reconnect; tower and map by screenshot; no fault in ~6 min of stream.
+  (b) REST replay of 11420 at `-DREPLAY_OFFSET_S=5400`: the flag falls ~80 s
+  in and the replay restarted 195 s and 201 s after going live, i.e. 2 min
+  after the flag both times (the old stamp fault restarted at once, half
+  the time); chequered pill and final order by screenshot.
+  (c) REST replay of qualifying 11416 at `-DREPLAY_OFFSET_S=1020`: chequered
+  pill at the end of Q1, the row the old model dropped.
+  Plain build: token, calendar, Lusail outline, `M` login OK in 2.7 s, DMA
+  heap low 134 KB. Stack never used (`[sys] stack low`): lvgl 3.1-3.3 KB of
+  6, f1net 16.4 KB of 20, mqtt 10.2 KB of 12, loop 5.8 KB.
+  NOT yet seen on hardware: rows from the real broker, the hourly token
+  renewal and stream re-login, the overrun rule and the late join.
+  The 27 Nov binaries are kept in `logs/build_2026-11-27/` (not tracked).
+- Review 2026-11-28 (what changed in behaviour; see the hardware note above
+  for what has been confirmed on the panel):
+  - Timestamps with 0 = "not set" come from `stampNow()` (stamp.h), never
+    `millis() | 1`: that can be 1 ms ahead, and an unsigned "how long ago"
+    in the same millisecond then reads 49.7 days. It closed the live screen
+    the instant a race's flag fell (about every second race) and made the
+    MQTT task drain at once half the time - so the "only after 400 ms" rule
+    above is true from this build on, not before. A millis() deadline is
+    compared signed and cleared once passed (`backingOff()`).
+  - Stream hold (`holdStream` / `fillGap` in f1_app.cpp): from the start of
+    every stream connection its rows are collected, not applied, and the
+    feeds are polled fast, until one REST read of race control and position
+    has been answered after the stream came up. Covers the session start
+    and the 3-6 s of the hourly re-login. Log line: `[mqtt] caught up by
+    REST`. `mqttDownMs()` no longer restarts at each reconnect attempt.
+  - Race control: rows are not in date order (flag rows are cut to the
+    second and sent after a status row stamped ~90 ms later). The model
+    takes unseen rows up to `F1_RC_REORDER_MS` (5 s) behind the cursor and
+    REST asks from that far back; before, every qualifying "CHEQUERED FLAG"
+    and "RACE START" were dropped. Rows older than `F1_ALERT_FRESH_MS`
+    change the state without a full-screen alert.
+  - Token: a failed renewal keeps the current token and retries in 5 s; a
+    live session is only left after `AUTH_REFUSED_MS` of refusals with the
+    stream down. End of session: stays while race control has it under way,
+    up to `LIVE_OVERRUN_MAX_S` past the timetable. Within that limit a
+    session still going is also joined afresh after a reboot (`startLive`
+    with `late`: drivers + race control are read, then `F1Model::progress()`
+    decides; "over" is remembered, anything else is asked again every 2 min).
+  - One request spacing timer for all requests (`pacedGet`); laps / pit
+    history that failed at the session's start is asked for again (`s_owed`).
+  - Heartbeat adds `[sys] stack low: lvgl N, f1net N, mqtt N, loop N`
+    (bytes never used; the LVGL task has 6 KB in all - note the first values).
+  - Desktop: `tools/model_test.cc` (unit tests, no samples) and
+    `tools/host_test.cc`, which now uses the sessions' real keys and checks
+    its result (it had been replaying nothing since the session filter went
+    in: the model dropped every row as another session's).
+- Race-start sound (`sound.*`, 2026-11-28): the full-screen start alert
+  (`showAlert`, `ALERT_START`: races and sprints, live or replay, never a
+  stale row) calls `soundRaceStart()`. Speaker = I2S straight into the
+  onboard amplifier, no codec: BCLK 22, WS 21, DOUT 23, amplifier power
+  GPIO30 active LOW (Elecrow's Lesson12 for this board; `SPK_*` in
+  config.h; held off from boot by `soundBegin()`). The clip is
+  `start_sound.h`, made by `python3 tools/make_sound.py <file>` (ffmpeg;
+  16 kHz mono, silence trimmed, level normalised). It is the owner's own
+  clip and is NOT tracked (.gitignore): without the file the build is
+  silent. `SOUND_VOLUME` 0-100 (squared into the gain).
+  Nothing exists between clips: each play makes a task (`f1snd`, priority 4
+  like the network task - not higher, see the MQTT priority law - 6 KB
+  stack) and an I2S channel with 8 x 512-frame DMA buffers (16 KB of
+  internal DMA RAM, 256 ms, so a busy screen redraw cannot run it dry),
+  then gives both back. The amplifier is powered only while the I2S clocks
+  run, and one ring of silence is written after the clip before it goes off.
+- Hardware 2026-11-28 (07:15-07:25 ET), sound: the owner heard the clip (five
+  start-light beeps, 4.5 s) from the panel at volume 70 and asked for 20 %
+  more: 84, played once more, and he said to keep it there. `P`
+  twice and once from the real alert in a REST replay of race 11420 at `-DREPLAY_OFFSET_S=180` (lights out 46 s in):
+  `[snd] race start played, 4821 ms, stack low 4116-4252` each time, no
+  fault, DMA heap low 118-122 KB (it was ~122 KB before the first clip of
+  that boot too: TLS, not the sound). App now 67% of 3 MB. NOT yet seen:
+  the sound at a live race start with the stream busy (Sunday's race).
+  The build before the sound is kept in `logs/build_2026-11-28_reviewed/`.
+- Settings on the panel (`settings.*`, 2026-11-28): Wi-Fi name + password,
+  OpenF1 username + password, POSIX time zone and units (F/C, mph/km/h) are
+  read once at boot: NVS namespace `f1cfg` over the built-in values
+  (secrets.h, `LOCAL_TZ`, `TEMP_FAHRENHEIT`, `SPEED_MPH`). The owner's panel
+  has nothing stored, so it runs on secrets.h exactly as before. `K` lines
+  on the serial console set them (hex values, one answer line each, `K!`
+  saves and restarts, `K0` erases and restarts); nothing is changed while
+  running. Units are therefore a run-time choice in ui.cpp (`inF()`,
+  `inMph()`); the simulator's stub uses the owner's (18/18 screens
+  unchanged). With no Wi-Fi name the boot screen shows `SETUP_URL` and
+  Wi-Fi is not started. `Serial.setRxBufferSize(1024)`: a set-up line is up
+  to 260 characters and loop() reads 5 times a second.
+- Web flasher (`docs/`, GitHub Pages from `/docs` on main - Pages still has
+  to be switched on in the repository's settings after the first push):
+  `docs/index.html` = ESP Web Tools 10.5.2 from unpkg (its manifest knows
+  `ESP32-P4`; flashes at 115200 through the CH340) plus a set-up form that
+  talks the `K` commands over Web Serial. `tools/make_release.sh` builds
+  `docs/firmware/` (bootloader 0x2000, partitions 0x8000, boot_app0 0xe000,
+  app 0x10000 + manifest.json, version = `FW_VERSION` in config.h) from a
+  copy of only the files git tracks, with secrets.h.example as secrets.h:
+  NEVER put a .bin there any other way - every other build has the owner's
+  Wi-Fi and OpenF1 passwords inside it (.gitignore lets only
+  `docs/firmware/*.bin` through). No start_sound.h in it either (silent),
+  and `-ffile-prefix-map` keeps home-folder paths out; the script refuses
+  to write if one is found. Run it again, and bump `FW_VERSION`, whenever
+  the firmware changes. `tools/make_tzdata.py` writes `docs/tz.js` (IANA
+  name -> POSIX string, from the Mac's zoneinfo).
+- Hardware 2026-11-28 (07:40-07:50 ET), settings + release binary:
+  (a) own build: boots on secrets.h (`stored=0`), `K?`; bad hex / unknown
+  key / control character refused; `Ktz` + `Kunits` + `K!` -> restart, read
+  back `stored=1`, clock in UTC by screenshot; a stored (made-up) Wi-Fi
+  name wins over secrets.h (`net=0`); `K0` -> back on secrets.h, token and
+  calendar fine. The software restart (`ESP.restart()`) brings the C6 link
+  back each time.
+  (b) the release files written with esptool at the manifest's four
+  offsets: boots, `[cfg] Wi-Fi NOT SET`, set-up line on the boot screen by
+  screenshot (docs/screens/setup.png), `K!` with no Wi-Fi name refused, `P`
+  silent.
+  (c) own build back on: token, calendar, `M` login OK in 3.2 s, sound
+  plays. Sound while the stream's TLS session was up: DMA heap low 103 KB
+  (the lowest seen today; trouble started near 35 KB).
+  NOT tested by anyone yet: the page's Install button and its set-up form
+  against a real panel (needs a person at Chrome's port chooser), and the
+  release build on Wi-Fi (it has no credentials until the form gives it
+  some). The page itself loads with no script errors (version from the
+  manifest, 419 time zones).
 - Status 2026-11-27: compiles (61% of 3 MB app). Not checkable over serial
   and still to be eyeballed on the glass: tearing, backlight level, the
   footer tabs under a finger.

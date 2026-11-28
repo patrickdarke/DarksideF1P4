@@ -8,6 +8,8 @@
 #include "config.h"
 #include "f1_app.h"
 #include "f1_head.h"
+#include "settings.h"
+#include "sound.h"
 
 // ---- theme ---------------------------------------------------------------
 #define C_BG     0x0B0D10
@@ -61,7 +63,8 @@ static int s_view = V_NEXT;
 static uint32_t s_viewSince = 0;
 static bool s_skip = false;
 
-// Live screens: a tap steps through them; a tap on a tower row opens that car.
+// Live screens: picked with the footer tabs (a header tap steps to the next
+// one); a tap on a driver's row opens that car.
 enum LiveView { LV_TOWER, LV_MAP, LV_SECTORS, LV_TYRES, LV_DRIVER, LV_COUNT };
 static int s_liveView = LIVE_VIEW_START % LV_COUNT;
 static uint8_t s_focus = 0;                 // car on the driver screen
@@ -177,27 +180,18 @@ static uint32_t tyreColour(char c) {
   }
 }
 
-// The feed is in Celsius.
-#if TEMP_FAHRENHEIT
-#define TEMP_UNIT "°F"
-static float temp(float c) { return c * 9.0f / 5.0f + 32.0f; }
-#else
-#define TEMP_UNIT "°C"
-static float temp(float c) { return c; }
-#endif
-
-// The feed has car and speed-trap speeds in km/h and the wind in m/s.
-#if SPEED_MPH
-#define SPEED_UNIT "mph"
-#define WIND_FMT "%.0f mph"
-static int speed(int kmh) { return (kmh * 1000 + 804) / 1609; }
-static float wind(float ms) { return ms * 2.23694f; }
-#else
-#define SPEED_UNIT "km/h"
-#define WIND_FMT "%.1f m/s"
-static int speed(int kmh) { return kmh; }
-static float wind(float ms) { return ms; }
-#endif
+// The feed is in Celsius, with car and speed-trap speeds in km/h and the wind
+// in m/s. The panel's settings say what to show.
+static bool inF() { return settings().fahrenheit; }
+static bool inMph() { return settings().mph; }
+static float temp(float c) { return inF() ? c * 9.0f / 5.0f + 32.0f : c; }
+static const char *tempUnit() { return inF() ? "°F" : "°C"; }
+static int speed(int kmh) { return inMph() ? (kmh * 1000 + 804) / 1609 : kmh; }
+static const char *speedUnit() { return inMph() ? "mph" : "km/h"; }
+static void fmtWind(float ms, char *out, size_t n) {
+  if (inMph()) snprintf(out, n, "%.0f mph", ms * 2.23694f);
+  else snprintf(out, n, "%.1f m/s", ms);
+}
 
 static void fmtGap(float sec, uint8_t laps, char *out, size_t n) {
   if (laps) snprintf(out, n, "+%d LAP%s", laps, laps > 1 ? "S" : "");
@@ -311,7 +305,7 @@ static void liveHeader(const F1Model &m, const AppStatus &st) {
       break;
   }
   if (L.trackT > -50)
-    snprintf(sub, sizeof sub, "Track %.0f" TEMP_UNIT "  Air %.0f" TEMP_UNIT "%s", temp(L.trackT), temp(L.airT),
+    snprintf(sub, sizeof sub, "Track %.0f%s  Air %.0f%s%s", temp(L.trackT), tempUnit(), temp(L.airT), tempUnit(),
              L.rain ? "  RAIN" : "");
   else sub[0] = 0;
   setHeader(title, center, pill, bg, fg, sub);
@@ -622,10 +616,12 @@ static void renderMapView(const F1Model &m, const AppStatus &st) {
   placeDots(m, st);
 
   char w[160] = "", one[48];
-  if (L.airT > -50) { snprintf(one, sizeof one, "AIR %.0f" TEMP_UNIT "     TRACK %.0f" TEMP_UNIT, temp(L.airT), temp(L.trackT)); strlcat(w, one, sizeof w); }
+  if (L.airT > -50) { snprintf(one, sizeof one, "AIR %.0f%s     TRACK %.0f%s", temp(L.airT), tempUnit(), temp(L.trackT), tempUnit()); strlcat(w, one, sizeof w); }
   if (L.humidity >= 0) { snprintf(one, sizeof one, "     HUMIDITY %.0f%%", L.humidity); strlcat(w, one, sizeof w); }
   if (L.windSpeed >= 0) {
-    snprintf(one, sizeof one, "     WIND " WIND_FMT " %s", wind(L.windSpeed), L.windDir >= 0 ? compass(L.windDir) : "");
+    char ws[16];
+    fmtWind(L.windSpeed, ws, sizeof ws);
+    snprintf(one, sizeof one, "     WIND %s %s", ws, L.windDir >= 0 ? compass(L.windDir) : "");
     strlcat(w, one, sizeof w);
   }
   if (L.pressure > 0) { snprintf(one, sizeof one, "     %.0f mbar", L.pressure); strlcat(w, one, sizeof w); }
@@ -806,7 +802,9 @@ static void renderSectors(const F1Model &m) {
       lv_obj_invalidate(r.strip);
     }
   }
-  setText(s_note, "trap in " SPEED_UNIT "  |  purple: session best  |  green: personal best");
+  char note[80];
+  snprintf(note, sizeof note, "trap in %s  |  purple: session best  |  green: personal best", speedUnit());
+  setText(s_note, note);
 }
 
 // ---- live: one car -----------------------------------------------------------
@@ -824,7 +822,7 @@ static const char *compoundName(char c) {
 
 // The fast-changing part, also refreshed between the half-second ticks.
 static void renderTelemetry(const F1Model &m, const AppStatus &st) {
-  const F1Driver *d = const_cast<F1Model &>(m).driver(s_focus);
+  const F1Driver *d = m.driver(s_focus);
   bool fresh = d && d->carMs && st.dataNowMs - d->carMs < 6000;
   char b[16];
   if (fresh) snprintf(b, sizeof b, "%d", speed(d->speed)); else strcpy(b, "--");
@@ -844,7 +842,7 @@ static void renderTelemetry(const F1Model &m, const AppStatus &st) {
 
 static void renderDriver(const F1Model &m, const AppStatus &st) {
   const F1Live &L = m.live;
-  const F1Driver *d = const_cast<F1Model &>(m).driver(s_focus);
+  const F1Driver *d = m.driver(s_focus);
   if (!d) return;
   char b[120], t[20];
   uint16_t hw = 0, hh = 0;
@@ -912,7 +910,7 @@ static void renderDriver(const F1Model &m, const AppStatus &st) {
   bool dim;
   f1FmtLap(m.shownBest(*d, &dim), b, sizeof b);
   setText(s_dBest, b[0] ? b : "-");
-  if (d->trap) snprintf(b, sizeof b, "%d " SPEED_UNIT, speed(d->trap)); else strcpy(b, "-");
+  if (d->trap) snprintf(b, sizeof b, "%d %s", speed(d->trap), speedUnit()); else strcpy(b, "-");
   setText(s_dTrap, b);
   setColour(s_dTrap, d->trap && d->trap >= L.bestTrap ? C_PURPLE : C_TEXT);
   renderTelemetry(m, st);
@@ -1000,7 +998,7 @@ static void renderNext(const F1Model &m, const AppStatus &st) {
     setText(s_nxNames, names);
   }
   renderMap(m, nx);
-  if (st.authNeeded) setText(s_nxStatus, "Live timing needs an OpenF1 login - see secrets.h");
+  if (st.authNeeded) setText(s_nxStatus, "Live timing needs an OpenF1 login - see the set-up page");
   else {
     char clk[16];
     localFmt(now, "%H:%M", clk, sizeof clk);
@@ -1047,6 +1045,7 @@ static void showAlert(const F1Model &m, const F1Alert &a) {
   for (lv_obj_t *l : {s_alertBig, s_alertSub, s_alertSub2}) setColour(l, fg);
   show(s_alert, true);
   s_alertUntil = millis() + ALERT_SHOW_MS;
+  if (a.kind == ALERT_START) soundRaceStart();
 }
 
 static void showToast(F1Model &m, const F1Alert &a) {
@@ -1069,6 +1068,10 @@ static void showToast(F1Model &m, const F1Alert &a) {
       snprintf(b, sizeof b, LV_SYMBOL_VOLUME_MAX "   TEAM RADIO   %s  %s", x->who.code, x->who.last);
       break;
     case ALERT_FASTEST:
+      // The alert carries no time, so only the holder's strip can be right:
+      // one poll can raise three of these, and each used to show the last
+      // one's time beside a different driver.
+      if (a.a != m.live.fastestNum) return;
       f1FmtLap(m.live.fastest, t, sizeof t);
       snprintf(b, sizeof b, "FASTEST LAP   %s   %s", x->who.code, t);
       bar = C_PURPLE;
@@ -1356,12 +1359,13 @@ void uiBegin() {
   s_wx = mkLabel(wxBox, 16, 11, LMAP_W - 32, F16, C_TEXT);
   show(s_pMap, false);
 
-  // Live: sectors. Same two columns as the tower.
+  // Live: tyres. One object, drawn by drawTyres().
   s_pTyre = mkBox(s_table, 0, 62, SCR_W, 500, C_BG);
   s_tyChart = mkBox(s_pTyre, 0, 0, SCR_W, 500, C_BG);
   lv_obj_add_event_cb(s_tyChart, drawTyres, LV_EVENT_DRAW_MAIN, nullptr);
   show(s_pTyre, false);
 
+  // Live: sectors. Same two columns as the tower.
   s_pSec = mkBox(s_table, 0, 62, SCR_W, 500, C_BG);
   for (int i = 0; i < ROWS; ++i) {
     SecRow &r = s_srow[i];
@@ -1418,7 +1422,9 @@ void uiBegin() {
     lv_bar_set_range(b, 0, max);
     return b;
   };
-  caption(s_pDrv, 372, 20, "SPEED  " SPEED_UNIT);
+  char spd[24];
+  snprintf(spd, sizeof spd, "SPEED  %s", speedUnit());
+  caption(s_pDrv, 372, 20, spd);
   s_dSpeed = mkLabel(s_pDrv, 372, 44, 190, F48, C_TEXT);
   caption(s_pDrv, 590, 20, "GEAR");
   s_dGear = mkLabel(s_pDrv, 590, 44, 90, F48, C_TEXT);

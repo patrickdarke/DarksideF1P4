@@ -22,6 +22,8 @@
 
 #include "f1_app.h"
 #include "lvgl_v8_port.h"
+#include "settings.h"
+#include "sound.h"
 #include "ui.h"
 
 using namespace esp_panel::drivers;
@@ -50,8 +52,10 @@ static void memLine(const char *when) {
 }
 
 void setup() {
+  Serial.setRxBufferSize(1024);   // a set-up line is up to 260 characters and loop() looks 5 times a second
   Serial.begin(115200);
-  Serial.println("\nDarkside F1 P4");
+  Serial.println("\nDarkside F1 P4 " FW_VERSION);
+  settingsLoad();
 
   // INTERNAL RAM LAW. The esp-hosted SDIO link to the C6 and the AES engine
   // need DMA-capable internal RAM, and with the core's defaults (malloc()
@@ -63,6 +67,7 @@ void setup() {
   heap_caps_malloc_extmem_enable(INTERNAL_MALLOC_MAX);
   mbedtls_platform_set_calloc_free(psramCalloc, free);
   memLine("boot");
+  soundBegin();
 
   // The MIPI D-PHY (LDO3, 2.5 V) and the touch/I2C pull-ups (LDO4, 3.3 V)
   // are fed from the P4's internal regulators. Nothing lights up without them.
@@ -90,8 +95,8 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(MDNS_HOST);
   WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  configTzTime(LOCAL_TZ, NTP_SERVER);
+  if (settings().wifiSsid[0]) WiFi.begin(settings().wifiSsid, settings().wifiPass);   // else: waiting for the set-up page
+  configTzTime(settings().tz, NTP_SERVER);
   MDNS.begin(MDNS_HOST);
   memLine("ui + wifi");
 
@@ -141,6 +146,7 @@ static void sendScreenshot() {
 
 void loop() {
   // Serial commands, one per line: "S" = screenshot, "M" = test the stream login, "G<path?query>" = test GET,
+  // "P" = play the race-start sound, "K..." = settings from the set-up page (settings.h),
   // "V<n>" / "D<car>" / "I<n>" / "A<n>" = show a screen or alert (see ui.h).
   static char line[300];
   static size_t ll = 0;
@@ -153,6 +159,8 @@ void loop() {
     line[ll] = 0;
     if (ll == 1 && line[0] == 'S') sendScreenshot();
     else if (ll == 1 && line[0] == 'M') appDebugStream();
+    else if (ll == 1 && line[0] == 'P') soundRaceStart();
+    else if (ll > 1 && line[0] == 'K') settingsCommand(line);
     else if (ll > 1 && line[0] == 'G') appDebugFetch(line + 1);
     else if (ll > 1 && strchr("VDIA", line[0])) uiDebug(line);
     ll = 0;
@@ -176,6 +184,14 @@ void loop() {
                   (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_DMA),
                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                   WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "down");
+    // Least stack each task has ever had left, in bytes (0 = no such task
+    // now). The LVGL task has 6 KB in all, the network task 20, MQTT 12.
+    auto stackLow = [](const char *task) {
+      TaskHandle_t h = xTaskGetHandle(task);
+      return h ? (unsigned)uxTaskGetStackHighWaterMark(h) : 0u;
+    };
+    Serial.printf("[sys] stack low: lvgl %u, f1net %u, mqtt %u, loop %u\n", stackLow("lvgl"), stackLow("f1net"),
+                  stackLow("mqtt_task"), (unsigned)uxTaskGetStackHighWaterMark(nullptr));
   }
   delay(200);
 }

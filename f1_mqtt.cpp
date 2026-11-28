@@ -7,6 +7,8 @@
 #include <mqtt_client.h>
 
 #include "config.h"
+#include "settings.h"
+#include "stamp.h"
 
 static const char *const TOPICS[MT_COUNT] = {
     "v1/position", "v1/intervals", "v1/race_control", "v1/laps",     "v1/pit",       "v1/stints",
@@ -23,6 +25,7 @@ static SemaphoreHandle_t s_mx, s_drainMx;
 static esp_mqtt_client_handle_t s_cli;
 static volatile uint8_t s_state;                  // 0 off, 1 connecting, 2 up, 3 down
 static volatile uint32_t s_since;                 // millis() of the last state change
+static volatile uint32_t s_lost;                  // stamp of when it stopped being up (or was first asked for); 0 while up or off
 static volatile uint32_t s_rows, s_oldest;        // s_oldest: millis() of the oldest undrained row, 0 = none
 static volatile uint8_t s_subs;
 static volatile uint8_t s_fails;                  // attempts in a row that did not get as far as "up"
@@ -33,7 +36,21 @@ static size_t s_fragLen;
 static const size_t FRAG_MAX = 64 * 1024;
 static int s_fragTopic = -1;
 
-static void setState(uint8_t st) { s_state = st; s_since = millis(); }
+// The times first: a reader on another task that sees the new state must not
+// pair it with the old state's time (an hour of "down" in an instant).
+// s_lost is not moved by the retries of an outage (connecting <-> dropped):
+// "how long has it not been up" used to start again at every attempt, so with
+// the broker unreachable the fast polls ran for only 20 s of every 70.
+static void setState(uint8_t st) {
+  uint32_t now = stampNow();
+  if (st == 0 || st == 2) s_lost = 0;
+  else if (!s_lost) s_lost = now;
+  s_since = now;
+  s_state = st;
+}
+
+static volatile bool s_hold;                      // rows are collected but not handed over
+void mqttHold(bool on) { s_hold = on; }
 
 static int topicOf(const char *t, int n) {
   for (int i = 0; i < MT_COUNT; ++i)
@@ -63,7 +80,7 @@ static void append(int topic, const char *data, size_t n) {
   memcpy(b.buf + b.len, data, n);
   b.len += n;
   ++s_rows;
-  if (!s_oldest) s_oldest = millis() | 1;
+  if (!s_oldest) s_oldest = stampNow();   // not "| 1": see stamp.h (the MQTT task then drained at once, half the time)
   xSemaphoreGive(s_mx);
 }
 
@@ -133,9 +150,10 @@ static void onEvent(void *, esp_event_base_t, int32_t id, void *data) {
         s_fragLen = e->current_data_offset + e->data_len;
         if ((int)s_fragLen >= e->total_data_len) append(s_fragTopic, s_frag, s_fragLen);
       }
-      // The network task normally drains; do it here if it has been busy.
+      // The network task normally drains; do it here if it has been busy -
+      // but not while it is reading a session's history (mqttHold).
       uint32_t old = s_oldest;
-      if (old && millis() - old > 400) mqttDrain();
+      if (!s_hold && old && millis() - old > 400) mqttDrain();
       break;
     }
     default: break;
@@ -179,7 +197,7 @@ void mqttConnect(const char *token) {
   esp_mqtt_client_config_t cfg = {};
   cfg.broker.address.uri = MQTT_URI;
   if (!strncmp(MQTT_URI, "mqtts", 5)) cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
-  cfg.credentials.username = OPENF1_USERNAME[0] ? OPENF1_USERNAME : "darkside";
+  cfg.credentials.username = settings().f1User[0] ? settings().f1User : "darkside";
   cfg.credentials.authentication.password = token;
   cfg.session.keepalive = 30;
   // No automatic reconnect: the token is only good for an hour, so every
@@ -200,7 +218,13 @@ void mqttConnect(const char *token) {
 
 bool mqttUp() { return s_state == 2; }
 bool mqttFailed() { return s_state == 3; }
-uint32_t mqttDownMs() { return s_state == 2 ? 0 : (s_state == 0 ? 0xFFFFFFFFu : millis() - s_since + 1); }
+uint32_t mqttDownMs() {
+  uint8_t st = s_state;
+  uint32_t lost = s_lost;
+  if (st == 2) return 0;
+  if (st == 0) return 0xFFFFFFFFu;
+  return lost ? millis() - lost + 1 : 0;        // 0: it came up between the two reads
+}
 uint32_t mqttRowCount() { return s_rows; }
 
 void mqttPublish(const char *topic, const char *payload) {

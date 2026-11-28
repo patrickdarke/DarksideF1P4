@@ -22,9 +22,16 @@ void mqttConnect(const char *token);
 void mqttStop();
 bool mqttUp();                  // connected and subscribed
 bool mqttFailed();              // the last attempt ended without getting there
-uint32_t mqttDownMs();          // how long it has not been up (0 while up)
+// How long it has not been up, through however many attempts (0 while up,
+// 0xFFFFFFFF when stopped).
+uint32_t mqttDownMs();
 uint32_t mqttRowCount();        // rows received since boot
 // Hand over whatever has been collected. Call often from the network task;
 // the MQTT task does it too if that task is busy for a while.
 void mqttDrain();
+// While on, the MQTT task only collects rows; nothing reaches the sink until
+// the caller turns it off and drains. For reading by REST first what the
+// stream will not send (a session's history, the rows of a break): pushed
+// rows must not be applied ahead of older ones still on their way.
+void mqttHold(bool on);
 void mqttPublish(const char *topic, const char *payload);   // bench clock only

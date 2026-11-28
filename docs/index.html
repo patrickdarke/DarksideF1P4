@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Darkside F1 P4 - install</title>
+<meta name="description" content="Install the Darkside F1 P4 live-timing firmware on an Elecrow CrowPanel Advanced 10.1 inch ESP32-P4 from the browser.">
+<style>
+  :root {
+    --bg: #0b0d11; --panel: #151921; --line: #262c38; --text: #eef1f5; --dim: #9aa3b2;
+    --red: #e10600; --green: #3ddc84; --amber: #f5b400;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 40px 20px 64px; }
+  header { border-left: 6px solid var(--red); padding-left: 16px; margin-bottom: 28px; }
+  h1 { margin: 0; font-size: 34px; letter-spacing: -0.5px; }
+  header p { margin: 6px 0 0; color: var(--dim); }
+  .shots { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0 0 28px; }
+  .shots img { width: 100%; height: auto; display: block; border: 1px solid var(--line); border-radius: 6px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 22px 24px; margin-bottom: 18px; }
+  h2 { margin: 0 0 12px; font-size: 20px; display: flex; align-items: baseline; gap: 12px; }
+  h2 .n { color: var(--red); font-family: var(--mono); font-size: 15px; }
+  p { margin: 0 0 12px; }
+  ul { margin: 0 0 12px; padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  a { color: #7fb4ff; }
+  .dim { color: var(--dim); font-size: 14px; }
+  button, .btn {
+    font: inherit; font-weight: 600; color: #fff; background: var(--red); border: 0; border-radius: 6px;
+    padding: 11px 20px; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.12); }
+  button:disabled { background: #3a4150; color: #8b93a1; cursor: default; filter: none; }
+  button.quiet { background: transparent; color: var(--dim); border: 1px solid var(--line); font-weight: 400; padding: 8px 14px; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #7fb4ff; outline-offset: 2px; }
+  form { display: grid; gap: 14px; margin-top: 16px; }
+  fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px 16px; margin: 0; display: grid; gap: 12px; }
+  fieldset:disabled { opacity: 0.45; }
+  legend { padding: 0 8px; color: var(--dim); font-size: 14px; }
+  label { display: grid; gap: 4px; font-size: 14px; color: var(--dim); }
+  label.pick { display: flex; gap: 8px; align-items: center; color: var(--text); font-size: 15px; }
+  input[type=text], input[type=password], input[type=email], select {
+    font: inherit; color: var(--text); background: #0e1117; border: 1px solid #343b49; border-radius: 6px;
+    padding: 9px 10px; width: 100%;
+  }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  #found { font-size: 14px; }
+  #steps { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 6px; }
+  #steps li { padding-left: 26px; position: relative; margin: 0; }
+  #steps li::before { content: "\2022"; position: absolute; left: 6px; color: var(--dim); }
+  #steps li.ok::before { content: "\2713"; color: var(--green); left: 4px; }
+  #steps li.bad::before { content: "\2717"; color: var(--red); left: 4px; }
+  #steps li.wait::before { content: "\2026"; color: var(--amber); left: 3px; }
+  #steps li.bad { color: #ff9a96; }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; color: var(--dim); font-size: 14px; }
+  pre {
+    font: 12px/1.45 var(--mono); background: #07090c; border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px; margin: 8px 0 0; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; color: #b8c0cc;
+  }
+  .warn { border-left: 4px solid var(--amber); padding: 8px 12px; background: #1d1a10; border-radius: 4px; font-size: 14px; }
+  footer { color: var(--dim); font-size: 13px; margin-top: 28px; }
+  @media (max-width: 600px) { .two, .shots { grid-template-columns: 1fr; } h1 { font-size: 28px; } }
+</style>
+<script type="module" src="https://unpkg.com/esp-web-tools@10.5.2/dist/web/install-button.js?module"></script>
+<script src="tz.js"></script>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Darkside F1 P4</h1>
+    <p>Live Formula 1 timing on an Elecrow CrowPanel Advanced 10.1" ESP32-P4. Install it from this page: no tools, no compiling.</p>
+  </header>
+
+  <div class="shots">
+    <img src="screens/tower.png" alt="The panel's timing tower during a race" width="1024" height="600">
+    <img src="screens/map.png" alt="The panel's track map with the cars on it" width="1024" height="600">
+  </div>
+
+  <div class="warn" id="nobrowser" hidden>
+    This page needs <strong>Chrome or Edge on a computer</strong>: it talks to the panel over USB, which other browsers and phones cannot do.
+  </div>
+
+  <section>
+    <h2><span class="n">1</span> Install the firmware</h2>
+    <ul>
+      <li>Plug the panel into this computer with a USB-C <em>data</em> cable.</li>
+      <li>Press Install and pick the port named <em>USB Serial</em> (a CH340 adapter).</li>
+      <li>It takes about two minutes. Say yes to erasing the device on a first install.</li>
+    </ul>
+    <esp-web-install-button manifest="firmware/manifest.json">
+      <button slot="activate">Install Darkside F1 P4 <span id="fwver"></span></button>
+      <span slot="unsupported" class="dim">Installing needs Chrome or Edge on a computer.</span>
+      <span slot="not-allowed" class="dim">Installing needs this page to be opened over https.</span>
+    </esp-web-install-button>
+    <p class="dim" style="margin-top:12px">Only for the CrowPanel Advanced 10.1" ESP32-P4. When it is done, close the installer's window: the panel restarts and asks to be set up, like this.</p>
+    <img src="screens/setup.png" alt="The panel after installing: DARKSIDE F1 and the address of this page" width="1024" height="600" style="width:100%;max-width:420px;height:auto;display:block;border:1px solid var(--line);border-radius:6px">
+  </section>
+
+  <section>
+    <h2><span class="n">2</span> Set it up</h2>
+    <p>The firmware comes with no Wi-Fi name and no passwords in it. Give the panel yours here: they go down the USB cable and are kept on the panel. Nothing you type is sent anywhere else; this page has no server behind it.</p>
+    <div class="row">
+      <button id="connect" type="button">Connect to the panel</button>
+      <span id="found" class="dim">Not connected.</span>
+    </div>
+
+    <form id="setup" autocomplete="off">
+      <fieldset id="f-wifi" disabled>
+        <legend>Wi-Fi (2.4 GHz)</legend>
+        <div class="two">
+          <label>Network name <input type="text" id="ssid" maxlength="32" spellcheck="false" autocapitalize="off" required></label>
+          <label>Password <input type="password" id="wpass" maxlength="64" autocomplete="off"></label>
+        </div>
+        <span class="dim" id="wpass-note">Leave the password empty for an open network.</span>
+      </fieldset>
+
+      <fieldset id="f-login" disabled>
+        <legend>OpenF1 account</legend>
+        <span class="dim">Live timing during a session needs a paid <a href="https://openf1.org" target="_blank" rel="noopener">OpenF1</a> account. Without one the calendar, countdown, standings, results and circuit screens all work.</span>
+        <label class="pick" id="keep-row" hidden><input type="radio" name="login" value="keep"> Keep the login already on the panel</label>
+        <label class="pick"><input type="radio" name="login" value="none" checked> No account</label>
+        <label class="pick"><input type="radio" name="login" value="set"> Use this account</label>
+        <div class="two" id="login-fields" hidden>
+          <label>Username <input type="text" id="user" maxlength="127" spellcheck="false" autocapitalize="off" autocomplete="off"></label>
+          <label>Password <input type="password" id="upass" maxlength="127" autocomplete="off"></label>
+        </div>
+      </fieldset>
+
+      <fieldset id="f-local" disabled>
+        <legend>Where you are</legend>
+        <div class="two">
+          <label>Time zone <select id="tz"></select></label>
+          <label>Units
+            <select id="units">
+              <option value="CK">&deg;C and km/h</option>
+              <option value="FM">&deg;F and mph</option>
+            </select>
+          </label>
+        </div>
+      </fieldset>
+
+      <div class="row">
+        <button id="save" type="submit" disabled>Save to the panel</button>
+        <button id="forget" type="button" class="quiet" disabled>Erase the panel's settings</button>
+      </div>
+    </form>
+
+    <ul id="steps" aria-live="polite"></ul>
+    <details>
+      <summary>What the panel says</summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+
+  <section>
+    <h2><span class="n">3</span> Use it</h2>
+    <ul>
+      <li>Between sessions it shows the countdown to the next one; tap for standings, the last result and the circuit.</li>
+      <li>Fifteen minutes before a session it goes live on its own. The tabs along the bottom pick the timing tower, track map, sectors, tyres or one car.</li>
+      <li>To change anything later, plug it in and come back to step 2. Installing a newer version without erasing keeps your settings.</li>
+    </ul>
+    <p class="dim">Source, build instructions and the full description: <a href="https://github.com/patrickdarke/DarksideF1P4">github.com/patrickdarke/DarksideF1P4</a>.</p>
+  </section>
+
+  <footer>
+    <p>An unofficial hobby project, not associated in any way with the Formula 1 companies, OpenF1 or Elecrow. F1, FORMULA ONE, FORMULA 1, FIA FORMULA ONE WORLD CHAMPIONSHIP, GRAND PRIX and related marks are trade marks of Formula One Licensing B.V. Timing data: <a href="https://openf1.org">OpenF1</a>. Installer: <a href="https://esphome.github.io/esp-web-tools/">ESP Web Tools</a>.</p>
+  </footer>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const enc = new TextEncoder();
+const bytes = (s) => enc.encode(s).length;
+const toHex = (s) => Array.from(enc.encode(s), (b) => b.toString(16).padStart(2, "0")).join("");
+const fromHex = (h) => new TextDecoder().decode(new Uint8Array((h.match(/../g) || []).map((x) => parseInt(x, 16))));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---- the page before anything is connected ---------------------------------
+if (!("serial" in navigator)) {
+  $("nobrowser").hidden = false;
+  $("connect").disabled = true;
+}
+fetch("firmware/manifest.json").then((r) => r.json()).then((m) => { $("fwver").textContent = m.version; }).catch(() => {});
+
+const zones = window.TZ_POSIX || { UTC: "UTC0" };
+const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+for (const name of Object.keys(zones)) {
+  const o = document.createElement("option");
+  o.value = zones[name];
+  o.textContent = name.replace(/_/g, " ");
+  o.dataset.zone = name;
+  if (name === here) o.selected = true;
+  $("tz").append(o);
+}
+if (!zones[here]) $("tz").value = "UTC0";
+// Miles and Fahrenheit where both are in everyday use; miles alone do not decide it.
+$("units").value = /-(US|LR|MM)$/.test(navigator.language || "") ? "FM" : "CK";
+
+for (const r of document.querySelectorAll("input[name=login]"))
+  r.addEventListener("change", () => { $("login-fields").hidden = loginChoice() !== "set"; });
+const loginChoice = () => document.querySelector("input[name=login]:checked").value;
+
+// ---- steps and log -----------------------------------------------------------
+function step(text, cls) {
+  const li = document.createElement("li");
+  li.textContent = text;
+  if (cls) li.className = cls;
+  $("steps").append(li);
+  return { set(t, c) { li.textContent = t; li.className = c || ""; } };
+}
+function log(line) {
+  const el = $("log");
+  el.textContent += line + "\n";
+  if (el.textContent.length > 60000) el.textContent = el.textContent.slice(-40000);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ---- the serial link ---------------------------------------------------------
+// The panel reads one command a line and answers "[cfg] ..." (settings.h in
+// the source). Everything else it prints is its ordinary log.
+class Panel {
+  constructor(port) { this.port = port; this.waiting = []; }
+  async open() {
+    await this.port.open({ baudRate: 115200 });
+    // Neither line held: the board runs (holding them would keep it in reset or in its bootloader).
+    try { await this.port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e) { /* not every adapter can */ }
+    this.writer = this.port.writable.getWriter();
+    this.reading = this.read();
+  }
+  async read() {
+    const dec = new TextDecoder();
+    this.reader = this.port.readable.getReader();
+    let buf = "";
+    try {
+      for (;;) {
+        const { value, done } = await this.reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let at;
+        while ((at = buf.search(/[\r\n]/)) >= 0) {
+          const line = buf.slice(0, at).replace(/[^\x20-\x7e]/g, "");
+          buf = buf.slice(at + 1);
+          if (line) this.got(line);
+        }
+        if (buf.length > 4000) buf = "";
+      }
+    } catch (e) {
+      log("[page] the USB link stopped: " + e.message);
+    } finally {
+      this.reader.releaseLock();
+    }
+  }
+  got(line) {
+    log(line);
+    this.waiting = this.waiting.filter((w) => {
+      const m = line.match(w.want);
+      if (m) w.done(m);
+      return !m;
+    });
+  }
+  send(line, shown) {
+    log("> " + (shown || line));
+    return this.writer.write(enc.encode(line + "\n"));
+  }
+  // The first line matching `want`, or null after `ms`. With `line`, it is
+  // sent first, and again every `again` ms (the panel may still be starting).
+  async wait(want, ms, line, again, shown) {
+    let timer, repeat;
+    const answer = new Promise((done) => {
+      const w = { want, done };
+      this.waiting.push(w);
+      timer = setTimeout(() => { this.waiting = this.waiting.filter((x) => x !== w); done(null); }, ms);
+    });
+    if (line) {
+      await this.send(line, shown);
+      if (again) repeat = setInterval(() => this.send(line, shown).catch(() => {}), again);
+    }
+    const m = await answer;
+    clearTimeout(timer);
+    clearInterval(repeat);
+    return m;
+  }
+  async close() {
+    try { await this.reader.cancel(); await this.reading; } catch (e) { /* already gone */ }
+    try { this.writer.releaseLock(); await this.port.close(); } catch (e) { /* already gone */ }
+  }
+}
+
+let panel = null;      // open link
+let state = null;      // the panel's last "K?" answer
+
+function parseState(line) {
+  const s = {};
+  for (const part of line.split(" ").slice(2)) {
+    const eq = part.indexOf("=");
+    if (eq > 0) s[part.slice(0, eq)] = part.slice(eq + 1);
+  }
+  s.ssidText = fromHex(s.ssid || "");
+  return s;
+}
+async function ask() {
+  const m = await panel.wait(/^\[cfg\] v1 .*/, 25000, "K?", 1200);
+  return m ? parseState(m[0]) : null;
+}
+
+function enableForm(on) {
+  for (const id of ["f-wifi", "f-login", "f-local"]) $(id).disabled = !on;
+  $("save").disabled = !on;
+  $("forget").disabled = !on;
+}
+
+async function connect() {
+  $("steps").textContent = "";
+  if (panel) { await panel.close(); panel = null; }
+  let port;
+  try {
+    port = await navigator.serial.requestPort();
+  } catch (e) {
+    return;                                   // chooser closed
+  }
+  const s = step("Looking for the panel...", "wait");
+  $("connect").disabled = true;
+  try {
+    panel = new Panel(port);
+    await panel.open();
+    state = await ask();
+  } catch (e) {
+    s.set("That port would not open (" + e.message + "). Close the installer's window or any other program using it, then try again.", "bad");
+    panel = null;
+    $("connect").disabled = false;
+    return;
+  }
+  $("connect").disabled = false;
+  if (!state) {
+    s.set("Nothing answered on that port. Is the firmware from step 1 installed, and is this the panel's port?", "bad");
+    await panel.close();
+    panel = null;
+    $("found").textContent = "Not connected.";
+    return;
+  }
+  s.set("Panel found, firmware " + state.fw + ".", "ok");
+  $("found").textContent = "Connected. Wi-Fi: " + (state.ssidText || "not set") + ". OpenF1 login: " + (state.login === "1" ? "set" : "none") + ".";
+  $("connect").textContent = "Connect again";
+
+  // The form starts from what the panel has.
+  if (state.ssidText) $("ssid").value = state.ssidText;
+  $("wpass-note").textContent = state.ssidText
+    ? "Leave the password empty to keep the one on the panel (same network), or for an open network."
+    : "Leave the password empty for an open network.";
+  $("keep-row").hidden = state.login !== "1";
+  document.querySelector("input[name=login][value=" + (state.login === "1" ? "keep" : "none") + "]").checked = true;
+  $("login-fields").hidden = true;
+  if (state.stored === "1") {                 // set up before: show what it uses now
+    if ([...$("tz").options].some((o) => o.value === state.tz)) {
+      const mine = [...$("tz").options].find((o) => o.value === state.tz && o.dataset.zone === here);
+      if (mine) mine.selected = true; else $("tz").value = state.tz;
+    }
+    if (state.units) $("units").value = state.units;
+  }
+  enableForm(true);
+}
+
+async function set(key, value, shown) {
+  const m = await panel.wait(new RegExp("^\\[cfg\\] (ok " + key + "|bad.*)$"), 4000, "K" + key + "=" + value, 0, shown);
+  if (!m) throw new Error("the panel did not answer");
+  if (m[1].startsWith("bad")) throw new Error(m[1].replace(/^bad:?\s*/, "the panel refused it: "));
+}
+
+async function save(ev) {
+  ev.preventDefault();
+  if (!panel) return;
+  $("steps").textContent = "";
+  const ssid = $("ssid").value, wpass = $("wpass").value, user = $("user").value.trim(), upass = $("upass").value;
+  const choice = loginChoice();
+  const problem =
+    !ssid ? "Give the Wi-Fi network's name." :
+    bytes(ssid) > 32 ? "That Wi-Fi name is too long (32 bytes at most)." :
+    bytes(wpass) > 64 ? "That Wi-Fi password is too long." :
+    choice === "set" && (!user || !upass) ? "Give both the OpenF1 username and its password, or pick No account." :
+    bytes(user) > 127 || bytes(upass) > 127 ? "That OpenF1 username or password is too long." : "";
+  if (problem) { step(problem, "bad"); return; }
+
+  enableForm(false);
+  const s = step("Sending the settings...", "wait");
+  try {
+    await set("ssid", toHex(ssid));
+    // An empty password with the same network name means "as it is".
+    if (wpass || ssid !== state.ssidText) await set("wpass", toHex(wpass), "Kwpass=(hidden)");
+    if (choice === "set") {
+      await set("user", toHex(user), "Kuser=(hidden)");
+      await set("upass", toHex(upass), "Kupass=(hidden)");
+    } else if (choice === "none") {
+      await set("user", "");
+      await set("upass", "");
+    }
+    await set("tz", toHex($("tz").value));
+    await set("units", $("units").value);
+    const saved = await panel.wait(/^\[cfg\] (saved|bad.*)/, 5000, "K!");
+    if (!saved || saved[1] !== "saved") throw new Error(saved ? saved[1] : "the panel did not confirm");
+  } catch (e) {
+    s.set("Not saved: " + e.message + ".", "bad");
+    enableForm(true);
+    return;
+  }
+  s.set("Saved on the panel. It is restarting.", "ok");
+  $("wpass").value = "";
+  $("upass").value = "";
+
+  // Follow the restart: Wi-Fi first, then the login if there is one.
+  const w = step("Joining " + ssid + "...", "wait");
+  const wantLogin = choice !== "none";
+  let refused = false, token = false;
+  const watching = wantLogin ? [
+    panel.wait(/OpenF1 token ok/, 90000).then((m) => { token = !!m; }),
+    panel.wait(/OpenF1 login refused/, 90000).then((m) => { refused = !!m; }),
+  ] : [];
+  await sleep(2500);
+  let now = null;
+  for (const until = Date.now() + 60000; Date.now() < until;) {
+    now = await ask();
+    if (!now || now.net === "1") break;
+    await sleep(2000);
+  }
+  if (!now || now.net !== "1") {
+    w.set("The panel has not joined " + ssid + " after a minute. Check the name and the password (2.4 GHz networks only), then save again.", "bad");
+    state = now || state;
+    enableForm(true);
+    return;
+  }
+  w.set("On Wi-Fi.", "ok");
+  state = now;
+  if (wantLogin) {
+    const l = step("Checking the OpenF1 login...", "wait");
+    for (const until = Date.now() + 45000; Date.now() < until && !token && !refused;) await sleep(500);
+    if (token) l.set("OpenF1 login accepted.", "ok");
+    else if (refused) l.set("OpenF1 refused that username and password. Correct them and save again.", "bad");
+    else l.set("No word on the OpenF1 login yet. The panel keeps trying; its screen says if a login is needed.", "");
+  }
+  void watching;
+  step("Done. The panel is ready: you can unplug it from the computer and power it from any USB supply.", "ok");
+  enableForm(true);
+}
+
+async function forget() {
+  if (!panel) return;
+  if (!confirm("Erase the Wi-Fi, login, time zone and units stored on the panel?")) return;
+  $("steps").textContent = "";
+  const m = await panel.wait(/^\[cfg\] cleared/, 5000, "K0");
+  step(m ? "Erased. The panel has restarted with its built-in settings." : "The panel did not answer.", m ? "ok" : "bad");
+  if (m) { await sleep(2500); state = (await ask()) || state; $("found").textContent = "Connected. Wi-Fi: " + (state.ssidText || "not set") + "."; }
+}
+
+$("connect").addEventListener("click", connect);
+$("setup").addEventListener("submit", save);
+$("forget").addEventListener("click", forget);
+</script>
+</body>
+</html>

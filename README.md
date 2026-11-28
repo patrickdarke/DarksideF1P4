@@ -26,7 +26,8 @@ Race Display; not affiliated with it, OpenF1, or Formula 1.
 - **Alerts:** full-screen for lights out, Safety Car, VSC, red flag, green
   flag and the chequered flag (winner + top 5). Along the bottom: top-10
   overtakes (pit-stop position changes are filtered out), pit stops with
-  pit-lane and stationary time, team radio, fastest lap.
+  pit-lane and stationary time, team radio, fastest lap. Lights out can
+  also play a sound of your own on the panel's speaker (see Setup).
 - **Between sessions** (stays on one screen, tap for the next; `IDLE_ROTATE_S`
   in config.h brings back an automatic change every so many seconds):
   countdown to the next session with the weekend timetable in local time
@@ -52,9 +53,17 @@ safety car, the others between sessions.
 | ![Session result](docs/screens/result.png)<br>**Last result** | ![Drivers' championship](docs/screens/drivers.png)<br>**Drivers' championship** |
 | ![Constructors' championship](docs/screens/constructors.png)<br>**Constructors' championship** | |
 
-## Setup
+## Install from the browser
 
-1. `cp secrets.h.example secrets.h` and fill in Wi-Fi.
+**<https://patrickdarke.github.io/DarksideF1P4/>** flashes a panel over USB from
+Chrome or Edge and then asks for your Wi-Fi, OpenF1 login (optional), time
+zone and units, which it sends down the cable to be stored on the panel.
+That firmware has no Wi-Fi name, password or sound clip in it.
+
+## Build it yourself
+
+1. `cp secrets.h.example secrets.h` and fill in Wi-Fi (or leave it empty and
+   use the set-up page above after flashing).
 2. **Live timing needs a paid OpenF1 account** — put its username and
    password in `secrets.h`. Without one, everything between sessions works
    and the live screen says a login is needed. With one, live data is
@@ -68,6 +77,17 @@ safety car, the others between sessions.
 
 Other settings (time zone, stream delay to match a delayed TV feed, poll
 rates, brightness) are in `config.h`.
+
+**Race-start sound (optional).** No sound is included. To have one play
+with the lights-out alert, turn a clip of your own into `start_sound.h`
+before building (needs ffmpeg; up to 12 s; the file is ignored by git):
+
+```bash
+python3 tools/make_sound.py ~/Downloads/lights.mp3
+```
+
+`SOUND_VOLUME` in `config.h` sets the level (0 = silent). It plays through
+the panel's onboard amplifier, so a speaker has to be on its speaker output.
 
 ## First flash — things to check
 
@@ -106,7 +126,13 @@ screens stop updating until it ends.
 | `f1_app.*` | network task: calendar, live stream + polling, idle data |
 | `ui.*` | LVGL screens |
 | `esp_panel_*`, `board_config.h`, `lvgl_v8_port.*` | from Elecrow's example |
-| `tools/host_test.cc`, `tools/sim/`, `tools/fetch_samples.sh` | desktop tests: model replay and screen renders |
+| `sound.*`, `tools/make_sound.py` | race-start sound on the onboard amplifier; the converter for your own clip |
+| `settings.*` | Wi-Fi, login, time zone and units stored on the panel; the `K` serial commands the set-up page uses |
+| `docs/index.html`, `docs/firmware/`, `docs/tz.js` | the web flasher (GitHub Pages): install button, set-up form, the firmware it installs, time zones |
+| `tools/make_release.sh`, `tools/make_tzdata.py` | build `docs/firmware/` from tracked files only (no credentials); regenerate the time-zone table |
+| `stamp.h` | `millis()` timestamps in which 0 means "not set" |
+| `tools/model_test.cc` | desktop unit tests of the model (no saved data needed) |
+| `tools/host_test.cc`, `tools/sim/`, `tools/fetch_samples.sh` | desktop tests on saved sessions: checked model replay and screen renders |
 | `tools/serial_hub.py`, `tools/mqtt_bench.py` | bench: serial log + screenshots; a recorded session served as an MQTT stream |
 | `CLAUDE.md` | working notes: hardware findings, bench tools, what has been checked on the panel |
 | `docs/screens/` | the screenshots above |

@@ -1,11 +1,17 @@
 # Real Wi-Fi and OpenF1 credentials — copy secrets.h.example to secrets.h.
 secrets.h
 
+# The race-start sound, made by tools/make_sound.py from the owner's own clip
+start_sound.h
+
 # Build output
 build/
 *.bin
 *.elf
 *.map
+# ...except what the web flasher installs: tools/make_release.sh builds it from
+# tracked files only, so it has no credentials in it (any other .bin here does)
+!docs/firmware/*.bin
 
 # macOS
 .DS_Store

@@ -50,9 +50,20 @@ void headLoad(uint8_t num, const char *url) {
 
   int st = apiGetUrl(url);
   if (st != 200 || apiLen() < 64) { Serial.printf("[head] #%d: HTTP %d\n", num, st); return; }
+  // The size is in the PNG's header (IHDR: width and height at bytes 16-23,
+  // big-endian). Checked before decoding: a large image would be unpacked in
+  // full - tens of MB - only to be refused below.
+  const unsigned char *png = (const unsigned char *)apiBody();
+  auto be32 = [](const unsigned char *p) {
+    return ((unsigned)p[0] << 24) | ((unsigned)p[1] << 16) | ((unsigned)p[2] << 8) | (unsigned)p[3];
+  };
+  if (memcmp(png + 12, "IHDR", 4) || be32(png + 16) > 256 || be32(png + 20) > 256) {
+    Serial.printf("[head] #%d: not a PNG of 256 x 256 or less\n", num);
+    return;
+  }
   unsigned char *rgba = nullptr;
   unsigned w = 0, h = 0;
-  unsigned err = lodepng_decode32(&rgba, &w, &h, (const unsigned char *)apiBody(), apiLen());
+  unsigned err = lodepng_decode32(&rgba, &w, &h, png, apiLen());
   if (err || !rgba || !w || !h || w > 256 || h > 256) {
     Serial.printf("[head] #%d: not a usable PNG (%u, %ux%u)\n", num, err, w, h);
     if (rgba) lv_mem_free(rgba);

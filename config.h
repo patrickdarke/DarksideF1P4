@@ -46,12 +46,14 @@
 #ifndef REPLAY_LOOP_S
 #define REPLAY_LOOP_S 0
 #endif
-// Live screen shown first: 0 tower, 1 map, 2 sectors, 3 one car.
+// Live screen shown first: 0 tower, 1 map, 2 sectors, 3 tyres, 4 one car.
 #ifndef LIVE_VIEW_START
 #define LIVE_VIEW_START 0
 #endif
 
 // Air and track temperature: 1 = Fahrenheit, 0 = Celsius (the feed's unit).
+// Units and the time zone below are what a panel uses until the set-up page
+// stores others on it (settings.h).
 #define TEMP_FAHRENHEIT 1
 #define SPEED_MPH       1       // car, speed-trap and wind speeds in mph (0 = km/h and m/s)
 
@@ -63,9 +65,20 @@
 // ---- timing --------------------------------------------------------------
 #define LIVE_LEAD_S   (15 * 60)  // switch to the live screen this long before a session
 #define LIVE_TAIL_S   (30 * 60)  // and stay this long after its scheduled end
-// OpenF1 allows 6 requests/second and 60/minute. The rates below add up to
-// 46/minute in a race (30 fast + 5 laps + 5 overtakes + 3 pit + 2 stints +
-// 1 weather); API_MAX_PER_MIN is a hard cap enforced on every request.
+// A delayed or red-flagged session runs past the timetable. The live screen
+// stays while race control has it started and not finished and rows are
+// still arriving, until it has been stopped for the grace time (qualifying
+// is "finished" between its segments) or the limit is reached. Up to the
+// same limit a session that is still going is also joined afresh (after a
+// reboot); one that race control has over is not shown again.
+#define LIVE_OVERRUN_GRACE_S (15 * 60)
+#define LIVE_OVERRUN_MAX_S   (4 * 3600)
+// OpenF1 allows 6 requests/second and 60/minute. Without the stream the
+// rates below add up to 48/minute in a race (30 fast + 5 laps + 5 overtakes
+// + 3 pit + 2 stints + 2 team radio + 1 weather), and to 60 with the map up
+// (location, 12) or 63 with a car's screen (car_data, 15). API_MAX_PER_MIN
+// is a hard cap enforced on every request, so on those two screens every
+// feed then runs about a quarter slow.
 #define API_MAX_PER_MIN 50
 #define POLL_FAST_MS  6000       // position / intervals / race control
 #define POLL_LAPS_MS  12000      // laps, overtakes
@@ -82,7 +95,11 @@
 #ifndef STREAM_QUIET_MS
 #define STREAM_QUIET_MS 180000   // stream up but silent this long: reconnect
 #endif
-#define STREAM_GRACE_MS 10000    // stream down this long -> back to the fast polls
+// Stream down this long -> back to the fast polls. They come back sooner in
+// practice: a reconnection holds the stream's rows (holdStream in f1_app.cpp)
+// and the feeds are polled fast until REST has caught up.
+#define STREAM_GRACE_MS 10000
+#define AUTH_REFUSED_MS 20000    // every poll refused (401/403) this long -> the login is no good, leave the live screen
 #define POLL_LOC_MS   5000       // car positions by REST, only without the stream and with the map on screen
 #define POLL_CAR_MS   4000       // telemetry of the driver on screen, likewise
 // Corner numbers and marshal sectors per circuit: the file OpenF1's meetings
@@ -109,6 +126,10 @@
 #endif
 #define BACKLIGHT_PCT 80
 #define MDNS_HOST "darksidef1"
+// Shown by the set-up page, and in the manifest the web flasher reads (tools/make_release.sh).
+#define FW_VERSION "2026.11.28"
+// Where the web flasher and its set-up page live; shown on a panel with no Wi-Fi name.
+#define SETUP_URL "patrickdarke.github.io/DarksideF1P4"
 // ESP32-C6 radio over SDIO (esp-hosted). The Arduino core's defaults are
 // for Espressif's own P4 board and are wrong here, so they are set
 // explicitly. Elecrow's notes disagree on the C6 reset line for the V1.2
@@ -122,4 +143,14 @@
 #define C6_SDIO_D3  14
 #ifndef C6_RESET
 #define C6_RESET    32
+#endif
+// Speaker: I2S straight into the onboard amplifier, no codec (pins from
+// Elecrow's Lesson12 for this board). The amplifier's power pin is active LOW.
+#define SPK_I2S_BCLK 22
+#define SPK_I2S_WS   21
+#define SPK_I2S_DOUT 23
+#define SPK_AMP_EN   30
+// Race-start sound (start_sound.h, made by tools/make_sound.py): 0-100, 0 = silent.
+#ifndef SOUND_VOLUME
+#define SOUND_VOLUME 84
 #endif

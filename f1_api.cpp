@@ -7,6 +7,7 @@
 #include <esp_http_client.h>
 
 #include "config.h"
+#include "settings.h"
 
 static const size_t BODY_MAX = 6 * 1024 * 1024;   // a full race of /intervals is ~3 MB
 static char  *s_body = nullptr;
@@ -14,8 +15,15 @@ static size_t s_len = 0, s_cap = 0;
 static bool   s_overflow = false;
 static esp_http_client_handle_t s_cli = nullptr;
 static String s_token;
-static uint32_t s_tokenExpMs = 0;   // millis() deadline
-static uint32_t s_authRetryMs = 0;
+static uint32_t s_tokenExpMs = 0;   // millis() from which a new token is asked for: a minute before this one runs out
+static uint32_t s_authRetryMs = 0;  // millis() before which no login is attempted; 0 = any time
+static uint8_t  s_loginFails = 0;   // logins in a row that did not get through
+
+// The token in hand is accepted by the server for a little longer than
+// s_tokenExpMs says (which leaves a minute to get the next one).
+static bool tokenStillGood() {
+  return s_token.length() > 0 && (int32_t)(millis() - (s_tokenExpMs + 45000u)) < 0;
+}
 
 static bool grow(size_t need) {
   if (need <= s_cap) return true;
@@ -99,23 +107,31 @@ static String formEncode(const char *s) {
   return o;
 }
 
+// Log in. True only when a new token is in hand. A login that does not get
+// through (no answer, a server error) leaves the current token in place for
+// as long as the server still takes it and is tried again within seconds;
+// only a refusal of the username / password throws the token away and waits
+// a minute. (It used to drop the token first and wait a minute either way,
+// so one lost request at the hourly renewal ended the live session.)
 static bool fetchToken() {
   if (!apiHasCreds()) return false;
   if (s_authRetryMs && (int32_t)(millis() - s_authRetryMs) < 0) return false;
-  if (!ensureClient()) return false;
-  String form = "username=" + formEncode(OPENF1_USERNAME) + "&password=" + formEncode(OPENF1_PASSWORD);
-  esp_http_client_set_url(s_cli, "https://" OPENF1_HOST "/token");
-  esp_http_client_set_method(s_cli, HTTP_METHOD_POST);
-  esp_http_client_delete_header(s_cli, "Authorization");
-  esp_http_client_set_header(s_cli, "Content-Type", "application/x-www-form-urlencoded");
-  esp_http_client_set_post_field(s_cli, form.c_str(), form.length());
-  int st = perform();
-  if (s_cli) {
-    esp_http_client_set_method(s_cli, HTTP_METHOD_GET);
-    esp_http_client_set_post_field(s_cli, nullptr, 0);
-    esp_http_client_delete_header(s_cli, "Content-Type");
+  String form = "username=" + formEncode(settings().f1User) + "&password=" + formEncode(settings().f1Pass);
+  int st = -1;
+  for (int attempt = 0; attempt < 2 && st < 0; ++attempt) {   // again if the kept-alive socket had gone stale
+    if (!ensureClient()) break;
+    esp_http_client_set_url(s_cli, "https://" OPENF1_HOST "/token");
+    esp_http_client_set_method(s_cli, HTTP_METHOD_POST);
+    esp_http_client_delete_header(s_cli, "Authorization");
+    esp_http_client_set_header(s_cli, "Content-Type", "application/x-www-form-urlencoded");
+    esp_http_client_set_post_field(s_cli, form.c_str(), form.length());
+    st = perform();
+    if (s_cli) {
+      esp_http_client_set_method(s_cli, HTTP_METHOD_GET);
+      esp_http_client_set_post_field(s_cli, nullptr, 0);
+      esp_http_client_delete_header(s_cli, "Content-Type");
+    }
   }
-  s_token = "";
   if (st == 200) {
     JsonDocument doc;
     if (!deserializeJson(doc, s_body, s_len)) {
@@ -124,18 +140,25 @@ static bool fetchToken() {
       if (doc["expires_in"].is<const char *>()) exp = atol(doc["expires_in"].as<const char *>());
       else if (doc["expires_in"].is<long>()) exp = doc["expires_in"].as<long>();
       if (exp < 120) exp = 120;
+      if (exp > 86400) exp = 86400;             // the expiry test is signed 32-bit millis(): keep it well inside 24 days
       if (*tok) {
         s_token = tok;
         s_tokenExpMs = millis() + (uint32_t)(exp - 60) * 1000u;
         s_authRetryMs = 0;
+        s_loginFails = 0;
         Serial.printf("[api] OpenF1 token ok, valid %ld s\n", exp);
         return true;
       }
     }
   }
-  Serial.printf("[api] OpenF1 login failed (HTTP %d) — check OPENF1_USERNAME/PASSWORD\n", st);
-  s_authRetryMs = millis() + 60000;   // do not hammer the login endpoint
-  if (!s_authRetryMs) s_authRetryMs = 1;
+  bool refused = st == 400 || st == 401 || st == 403;
+  if (refused || !tokenStillGood()) s_token = "";
+  if (s_loginFails < 250) ++s_loginFails;
+  uint32_t wait = refused ? 60000 : s_loginFails <= 2 ? 5000 : 30000;   // do not hammer the login endpoint
+  if (refused) Serial.printf("[api] OpenF1 login refused (HTTP %d) - check the username and password\n", st);
+  else Serial.printf("[api] OpenF1 login did not get through (HTTP %d) - again in %u s%s\n", st,
+                     (unsigned)(wait / 1000), s_token.length() ? ", keeping the current token" : "");
+  s_authRetryMs = (millis() + wait) | 1;
   return false;
 }
 
@@ -145,9 +168,11 @@ int32_t apiTokenLeftMs() { return apiAuthed() ? (int32_t)(s_tokenExpMs - millis(
 
 bool apiToken(char *out, size_t n) {
   if (!apiHasCreds()) return false;
-  // A token that is about to run out is no use for a connection meant to last.
-  if (!apiAuthed() || (int32_t)(millis() - (s_tokenExpMs - 240000u)) > 0) fetchToken();
-  if (!apiAuthed()) return false;
+  // A token that is about to run out is no use for a connection meant to
+  // last: only one with more than four minutes left is handed out.
+  bool fresh = apiAuthed() && (int32_t)(millis() - (s_tokenExpMs - 240000u)) <= 0;
+  if (!fresh) fresh = fetchToken();
+  if (!fresh) return false;
   strlcpy(out, s_token.c_str(), n);
   return true;
 }
@@ -172,7 +197,7 @@ int apiGetUrl(const char *url) {
   esp_http_client_cleanup(c);
   return s_overflow ? -2 : st;
 }
-bool apiHasCreds() { return OPENF1_USERNAME[0] != 0; }
+bool apiHasCreds() { return settings().f1User[0] != 0; }
 bool apiAuthed() { return s_token.length() > 0; }
 const char *apiBody() { return s_body ? s_body : ""; }
 size_t apiLen() { return s_len; }
@@ -204,7 +229,7 @@ int apiGet(const char *pathQuery) {
       s_token = "";
       if (fetchToken()) continue;
     }
-    if (st < 0 && attempt == 0) continue;               // stale keep-alive socket
+    if (st == -1 && attempt == 0) continue;             // stale keep-alive socket (-2, a body over the limit, would only be read twice)
     return st;
   }
   return -1;

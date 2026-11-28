@@ -15,8 +15,22 @@
 #define F1_MAX_CORNERS  32
 #define F1_MAX_MSEC     32    // marshal sectors (live.yellowMask has one bit each)
 #define F1_MAX_SEGS     30    // mini-sectors in a lap (three sectors of up to ten)
+#define F1_SEEN         64    // newest rows remembered to tell a repeat from a new row
+// Race-control rows do not come in date order: a flag row is stamped to the
+// whole second and a status row to the millisecond, so "CHEQUERED FLAG
+// 04:18:00" is sent after "SESSION FINISHED 04:18:00.090". A row up to this
+// much older than the newest one is still applied, and REST asks for that
+// stretch again on every poll.
+#define F1_RC_REORDER_MS 5000
+// A race-control row older than this still changes the state but is not
+// announced (a history read late must not put "SAFETY CAR" up for one that
+// came out half an hour ago).
+#define F1_ALERT_FRESH_MS 120000
 
 enum F1Kind : uint8_t { F1_PRACTICE, F1_QUALI, F1_RACE };
+// PROG_BREAK: "finished", but not for good - qualifying between two of its
+// segments (or after one whose number the feed did not give).
+enum F1Progress : uint8_t { PROG_NOT_STARTED, PROG_UNDER_WAY, PROG_BREAK, PROG_OVER };
 enum F1Track : uint8_t { TRK_CLEAR, TRK_YELLOW, TRK_SC, TRK_VSC, TRK_RED, TRK_FINISHED };
 enum F1AlertKind : uint8_t {
   ALERT_NONE, ALERT_START, ALERT_GREEN, ALERT_SC, ALERT_SC_ENDING, ALERT_VSC,
@@ -49,13 +63,15 @@ struct F1Driver {
   F1Who    who;
   uint8_t  pos;           // 0 = unknown
   int64_t  posMs;         // date of the newest position row
-  uint8_t  gridPos;       // first position seen this session
+  uint8_t  gridPos;       // position in the session's earliest position row (the grid slot in a race)
+  int64_t  gridMs;        // date of that row
   float    gap;           // to leader, s; < 0 = unknown
   float    interval;      // to car ahead, s; < 0 = unknown
   uint8_t  gapLaps;       // > 0 => "+N LAP" instead of gap
   uint8_t  intLaps;
   int64_t  intMs;         // date of the newest interval row
   float    lastLap;       // s, 0 = none
+  uint16_t lastLapNo;     // the lap that time belongs to
   float    best[4];       // best lap per phase (0 = practice/race, 1-3 = Q1-Q3)
   uint16_t lapNo;         // lap the driver is on (highest lap_number started)
   char     compound;      // S M H I W, '?' unknown
@@ -97,6 +113,7 @@ struct F1Live {
   bool     scEnding;
   uint32_t yellowMask;    // sectors under local yellow
   uint8_t  qPhase;        // 0 none, 1-3
+  uint8_t  finishedPhase; // qualifying: the segment whose end set "finished" (1-3), 0 = not known
   int64_t  phaseStart[4];
   uint16_t lap;           // leader's lap
   char     note[112];     // newest race-control message worth showing
@@ -177,7 +194,11 @@ public:
   F1Info info;
   // Feed cursors (epoch ms): the newest row applied, used to ask REST for
   // "everything after". The feeds also arrive as a stream (MQTT), one row at
-  // a time and possibly twice, so every ingest is safe to repeat.
+  // a time and possibly twice, so every ingest is safe to repeat. A repeat is
+  // not the same as a late row: position, laps, pit and stints take rows in
+  // any order (newest wins per car); race control and overtakes are folded
+  // in the order they arrive, and a row older than the cursor (race control:
+  // by more than F1_RC_REORDER_MS) is dropped.
   int64_t curPos, curInt, curRc, curPit, curOvt, curWx, curRadio, curLoc;
   bool    alertsArmed;
   // True when rows describe the present (no replay / stream delay): a stint
@@ -194,7 +215,8 @@ public:
   int ingestIntervals(const char *json, size_t n);
   int ingestLaps(const char *json, size_t n, int64_t nowMs);
   int ingestStints(const char *json, size_t n);
-  int ingestRaceControl(const char *json, size_t n);
+  // nowMs: the feed's "now" for the freshness test of alerts; 0 = announce all.
+  int ingestRaceControl(const char *json, size_t n, int64_t nowMs = 0);
   int ingestPit(const char *json, size_t n);
   int ingestOvertakes(const char *json, size_t n);
   void flushOvertakes(int64_t nowMs);   // call after each poll round
@@ -222,8 +244,15 @@ public:
   static bool pickLap(const char *json, size_t n, int *driver, int64_t *startMs, float *durS,
                       float *sector1 = nullptr, float *sector2 = nullptr);
 
+  // Date of the newest row of the feeds that keep coming for as long as a
+  // session is on (weather alone is a row a minute); 0 = none yet.
+  int64_t newestRowMs() const;
+  // Where the session stands, from race control alone.
+  F1Progress progress() const;
+
   bool popAlert(F1Alert &out);
   F1Driver *driver(uint8_t num);
+  const F1Driver *driver(uint8_t num) const;
   const F1Who *who(uint8_t num) const;
   const F1SessionInfo *sessionByKey(int key) const;
   const F1MeetingInfo *meetingByKey(int key) const;
@@ -242,7 +271,8 @@ private:
   PendingOvt pend_[16];
   int nPend_;
   // (date, hash) of the newest rows of a feed whose rows can share a date.
-  struct Seen { int64_t t[16]; uint32_t h[16]; int at; bool had(int64_t tt, uint32_t hh); };
+  // seenBefore() also records the row: one call per row.
+  struct Seen { int64_t t[F1_SEEN]; uint32_t h[F1_SEEN]; int at; bool seenBefore(int64_t tt, uint32_t hh); };
   Seen seenRc_, seenOvt_;
   void sortOrder();
   uint8_t phaseOf(int64_t ms) const;

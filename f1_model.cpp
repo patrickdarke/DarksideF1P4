@@ -21,6 +21,8 @@ static int64_t daysFromCivil(int y, int m, int d) {
 
 int64_t f1ParseIso(const char *s) {
   if (!s) return 0;
+  for (int i = 0; i < 19; ++i)        // "YYYY-MM-DDTHH:MM:SS": s + 19 is read below
+    if (!s[i]) return 0;
   int Y, M, D, h, m, sec;
   if (sscanf(s, "%4d-%2d-%2dT%2d:%2d:%2d", &Y, &M, &D, &h, &m, &sec) != 6) return 0;
   int64_t ms = ((daysFromCivil(Y, M, D) * 24 + h) * 60 + m) * 60 + sec;
@@ -142,11 +144,11 @@ static uint32_t fnv(uint32_t h, const char *s) {
 }
 
 // True if (t, h) was already recorded; otherwise records it.
-bool F1Model::Seen::had(int64_t tt, uint32_t hh) {
-  for (int i = 0; i < 16; ++i)
+bool F1Model::Seen::seenBefore(int64_t tt, uint32_t hh) {
+  for (int i = 0; i < F1_SEEN; ++i)
     if (t[i] == tt && h[i] == hh) return true;
   t[at] = tt; h[at] = hh;
-  at = (at + 1) % 16;
+  at = (at + 1) % F1_SEEN;
   return false;
 }
 
@@ -179,10 +181,32 @@ void F1Model::resetLive(int sessionKey, F1Kind kind) {
   nPend_ = 0;
 }
 
-F1Driver *F1Model::driver(uint8_t num) {
+const F1Driver *F1Model::driver(uint8_t num) const {
   for (int i = 0; i < live.nDrv; ++i)
     if (live.drv[i].who.num == num) return &live.drv[i];
   return nullptr;
+}
+
+F1Driver *F1Model::driver(uint8_t num) {
+  return const_cast<F1Driver *>(static_cast<const F1Model *>(this)->driver(num));
+}
+
+int64_t F1Model::newestRowMs() const {
+  int64_t t = 0;
+  for (int64_t c : {curPos, curInt, curRc, curPit, curWx, curLoc})
+    if (c > t) t = c;
+  return t;
+}
+
+F1Progress F1Model::progress() const {
+  if (live.finished) {
+    // Qualifying is "finished" three times. The row that ends a segment
+    // carries that segment's number; the newest phase seen will not do, as
+    // rows sent in a break are already tagged with the next one.
+    if (live.kind == F1_QUALI && live.finishedPhase < 3) return PROG_BREAK;
+    return PROG_OVER;
+  }
+  return live.started ? PROG_UNDER_WAY : PROG_NOT_STARTED;
 }
 
 const F1Who *F1Model::who(uint8_t num) const {
@@ -202,9 +226,17 @@ void F1Model::pushAlert(uint8_t kind, uint8_t a, uint8_t b, uint8_t pos) {
   ++aCount_;
 }
 
+// A flag goes ahead of any footer strips still waiting (six pit stops under
+// a safety car would otherwise hold "SAFETY CAR ENDING" back for 20 s).
+// Within each kind the order of arrival is kept.
 bool F1Model::popAlert(F1Alert &out) {
   if (!aCount_) return false;
-  out = alerts_[aHead_];
+  int pick = 0;
+  for (int i = 0; i < aCount_; ++i)
+    if (alerts_[(aHead_ + i) % F1_ALERT_QUEUE].kind < ALERT_OVERTAKE) { pick = i; break; }
+  out = alerts_[(aHead_ + pick) % F1_ALERT_QUEUE];
+  for (int i = pick; i > 0; --i)                 // the strips it overtook move back one place
+    alerts_[(aHead_ + i) % F1_ALERT_QUEUE] = alerts_[(aHead_ + i - 1) % F1_ALERT_QUEUE];
   aHead_ = (aHead_ + 1) % F1_ALERT_QUEUE;
   --aCount_;
   return true;
@@ -286,8 +318,15 @@ int F1Model::ingestPosition(const char *json, size_t n) {
     int64_t t = f1ParseIso(r["date"] | "");
     F1Driver *d = driver((uint8_t)(r["driver_number"] | 0));
     uint8_t p = (uint8_t)(r["position"] | 0);
-    if (!d || !p || !t || t < d->posMs) continue;
-    if (!d->gridPos) d->gridPos = p;
+    if (!d || !p || !t) continue;
+    // The earliest row of the session, whatever order rows arrive in (the
+    // stream can deliver a new one before the history has been read).
+    if (!d->gridPos || t < d->gridMs) {
+      if (d->gridPos != p) changed = true;
+      d->gridPos = p;
+      d->gridMs = t;
+    }
+    if (t < d->posMs) continue;
     if (d->pos != p) changed = true;
     d->pos = p;
     d->posMs = t;
@@ -364,21 +403,23 @@ int F1Model::ingestLaps(const char *json, size_t n, int64_t nowMs) {
   int ok = parseRows(doc, json, n, F, rows);
   if (ok <= 0) return ok;
   int cnt = 0;
-  uint16_t lastLapNo[F1_MAX_DRIVERS] = {0};
   for (JsonObject r : rows) {
     if (FOREIGN(r)) continue;
     F1Driver *d = driver((uint8_t)(r["driver_number"] | 0));
     if (!d) continue;
     uint16_t lapNo = (uint16_t)(r["lap_number"] | 0);
     int64_t t0 = f1ParseIso(r["date_start"] | "");
-    // Lap 1 of a race has no date_start; every other row without one is skipped.
+    // A row without a start date (lap 1, as a rule) cannot be placed in
+    // time: it is taken as already begun.
     if (t0 && t0 > nowMs) continue;              // replay / stream delay
     if (lapNo > d->lapNo) { d->lapNo = lapNo; if (d->stintLap) ageTyre(d); }
     if (d->lapNo > live.lap) live.lap = d->lapNo;
     float dur = r["lap_duration"] | 0.0f;
     if (dur > 0 && (!t0 || t0 + (int64_t)(dur * 1000) <= nowMs)) {
-      int idx = (int)(d - live.drv);
-      if (lapNo >= lastLapNo[idx]) { lastLapNo[idx] = lapNo; d->lastLap = dur; }
+      // Kept per driver, not per response: a late copy of an older lap
+      // arriving on its own (the stream sends one row at a time) must not
+      // replace a newer lap's time.
+      if (lapNo >= d->lastLapNo) { d->lastLapNo = lapNo; d->lastLap = dur; }
       uint8_t ph = live.kind == F1_QUALI ? phaseOf(t0) : 0;
       if (!(d->best[ph] > 0) || dur < d->best[ph]) d->best[ph] = dur;
       if (!(live.fastest > 0) || dur < live.fastest) {
@@ -397,7 +438,12 @@ int F1Model::ingestLaps(const char *json, size_t n, int64_t nowMs) {
       if (!(sec[i] > 0) || (t0 && done > nowMs)) sec[i] = 0;   // not driven yet (replay)
       if (sec[i] > 0) any = true;
     }
-    if (any && lapNo >= d->secLap) {
+    // An older copy of the lap being driven (a REST answer that was on its
+    // way while the stream delivered the next sector) must not take sectors
+    // back: for the same lap only a row with at least as many is applied.
+    int have = 0, got = 0;
+    for (int i = 0; i < 3; ++i) { have += d->sector[i] > 0; got += sec[i] > 0; }
+    if (any && (lapNo > d->secLap || (lapNo == d->secLap && got >= have))) {
       d->secLap = lapNo;
       int k = 0;
       for (int i = 0; i < 3; ++i) {
@@ -488,7 +534,7 @@ static bool noteWorthy(const char *cat, const char *scope, const char *msg) {
   return true;
 }
 
-int F1Model::ingestRaceControl(const char *json, size_t n) {
+int F1Model::ingestRaceControl(const char *json, size_t n, int64_t nowMs) {
   static const char *const F[] = {"date", "session_key", "category", "flag", "scope", "sector",
                                   "qualifying_phase", "message", nullptr};
   JsonDocument doc; JsonArray rows;
@@ -503,10 +549,16 @@ int F1Model::ingestRaceControl(const char *json, size_t n) {
     const char *scope = r["scope"] | "";
     const char *msg = r["message"] | "";
     // Several messages can carry the same date ("SESSION STARTED" and "RACE
-    // START"), so a date alone cannot tell a repeat from a new one.
-    if (!t || t < curRc || seenRc_.had(t, fnv(fnv(fnv(2166136261u, cat), flag), msg))) continue;
+    // START"), so a date alone cannot tell a repeat from a new one - and a
+    // row can be a little older than the one before it (F1_RC_REORDER_MS):
+    // testing against the cursor alone dropped every chequered flag of a
+    // qualifying session.
+    if (!t || t < curRc - F1_RC_REORDER_MS) continue;
+    if (seenRc_.seenBefore(t, fnv(fnv(fnv(2166136261u, cat), flag), msg))) continue;
     if (t > curRc) curRc = t;
     ++cnt;
+    const bool fresh = !nowMs || t > nowMs - F1_ALERT_FRESH_MS;
+    auto alert = [&](uint8_t kind, uint8_t a = 0) { if (fresh) pushAlert(kind, a); };
     int ph = r["qualifying_phase"] | 0;
     if (ph >= 1 && ph <= 3) {
       if (!live.phaseStart[ph] || t < live.phaseStart[ph]) live.phaseStart[ph] = t;
@@ -518,28 +570,29 @@ int F1Model::ingestRaceControl(const char *json, size_t n) {
       if (has(msg, "DEPLOYED")) {
         live.track = virt ? TRK_VSC : TRK_SC;
         live.scEnding = false;
-        pushAlert(virt ? ALERT_VSC : ALERT_SC);
+        alert(virt ? ALERT_VSC : ALERT_SC);
       } else if (has(msg, "IN THIS LAP") || has(msg, "ENDING")) {
         live.scEnding = true;
-        pushAlert(virt ? ALERT_VSC_ENDING : ALERT_SC_ENDING);
+        alert(virt ? ALERT_VSC_ENDING : ALERT_SC_ENDING);
       }
     } else if (!strcmp(cat, "Flag")) {
       if (!strcmp(scope, "Track")) {
         if (!strcmp(flag, "RED")) {
           live.track = TRK_RED;
-          pushAlert(ALERT_RED);
+          alert(ALERT_RED);
         } else if (!strcmp(flag, "GREEN") || !strcmp(flag, "CLEAR")) {
           live.yellowMask = 0;
           live.scEnding = false;
           live.track = TRK_CLEAR;
           live.finished = false;                 // next qualifying segment
-          if (before == TRK_SC || before == TRK_VSC || before == TRK_RED) pushAlert(ALERT_GREEN);
+          if (before == TRK_SC || before == TRK_VSC || before == TRK_RED) alert(ALERT_GREEN);
         } else if (!strcmp(flag, "CHEQUERED")) {
           live.track = TRK_FINISHED;
           live.finished = true;
+          if (ph >= 1 && ph <= 3 && ph > live.finishedPhase) live.finishedPhase = (uint8_t)ph;
           if (live.kind == F1_RACE) {
             uint8_t w = live.nDrv ? live.drv[live.order[0]].who.num : 0;
-            pushAlert(ALERT_CHEQUERED, w);
+            alert(ALERT_CHEQUERED, w);
           }
         } else if (has(flag, "YELLOW")) {
           if (live.track == TRK_CLEAR) live.track = TRK_YELLOW;
@@ -556,11 +609,12 @@ int F1Model::ingestRaceControl(const char *json, size_t n) {
       }
     } else if (!strcmp(cat, "SessionStatus")) {
       if (has(msg, "STARTED")) {
-        if (!live.started && live.kind == F1_RACE) pushAlert(ALERT_START);
+        if (!live.started && live.kind == F1_RACE) alert(ALERT_START);
         live.started = true;
         live.finished = false;
       } else if (has(msg, "FINISHED")) {
         live.finished = true;
+        if (ph >= 1 && ph <= 3 && ph > live.finishedPhase) live.finishedPhase = (uint8_t)ph;
       }
     }
     if (noteWorthy(cat, scope, msg)) copyStr(live.note, sizeof live.note, msg);
@@ -609,7 +663,7 @@ int F1Model::ingestOvertakes(const char *json, size_t n) {
     if (FOREIGN(r)) continue;
     int64_t t = f1ParseIso(r["date"] | "");
     uint8_t a = (uint8_t)(r["overtaking_driver_number"] | 0), b = (uint8_t)(r["overtaken_driver_number"] | 0);
-    if (!t || t < curOvt || seenOvt_.had(t, ((uint32_t)a << 8) | b)) continue;
+    if (!t || t < curOvt || seenOvt_.seenBefore(t, ((uint32_t)a << 8) | b)) continue;
     if (t > curOvt) curOvt = t;
     ++cnt;
     uint8_t pos = (uint8_t)(r["position"] | 0);
